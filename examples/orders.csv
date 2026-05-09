@@ -1,0 +1,11 @@
+order_id,customer_id,order_date,status
+1001,1,2026-05-01,shipped
+1002,2,2026-05-01,processing
+1003,3,2026-05-02,shipped
+1004,4,2026-05-02,cancelled
+1005,5,2026-05-03,shipped
+1006,6,2026-05-03,processing
+1007,7,2026-05-04,shipped
+1008,8,2026-05-04,processing
+1009,9,2026-05-05,shipped
+1010,10,2026-05-05,processing

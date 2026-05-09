@@ -71,3 +71,12 @@ Pipe statements from stdin:
 ```powershell
 Get-Content queries.sql | julia --project=. bin/jsql.jl
 ```
+
+## Example Dataset
+An end-to-end JOIN demo is available in [examples/](examples/README.md).
+
+Run from the repository root:
+
+```powershell
+julia --project=. bin/jsql.jl --file examples/demo.sql
+```
