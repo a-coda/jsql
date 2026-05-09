@@ -40,9 +40,20 @@ struct InsertStatement <: SQLStatement
     values::Vector{Any}
 end
 
+struct ColumnRef
+    table::Union{Nothing, String}
+    column::Symbol
+end
+
+struct JoinSpec
+    right_table::String
+    on_expr::Any
+end
+
 struct SelectStatement <: SQLStatement
-    table::String
-    columns::Union{Nothing, Vector{Symbol}}
+    from_table::String
+    columns::Union{Nothing, Vector{ColumnRef}}
+    joins::Vector{JoinSpec}
     where_expr::Union{Nothing, Any}
 end
 
@@ -55,7 +66,7 @@ end
 abstract type ExprNode end
 
 struct CompareExpr <: ExprNode
-    column::Symbol
+    column::ColumnRef
     op::String
     value::Any
 end
@@ -78,7 +89,7 @@ end
 TokenStream(tokens::Vector{String}) = TokenStream(tokens, 1)
 
 function _tokenize(sql::String)
-    pattern = r"'[^']*'|>=|<=|!=|=|>|<|,|\(|\)|;|\*|-?\d+\.\d+|-?\d+|[A-Za-z_][A-Za-z0-9_]*"
+    pattern = r"'[^']*'|>=|<=|!=|=|>|<|,|\.|\(|\)|;|\*|-?\d+\.\d+|-?\d+|[A-Za-z_][A-Za-z0-9_]*"
     tokens = String[]
     for match in eachmatch(pattern, sql)
         push!(tokens, match.match)
@@ -147,6 +158,24 @@ function _parse_identifier_list!(ts::TokenStream)
     return names
 end
 
+function _parse_column_ref!(ts::TokenStream)
+    first = _expect_identifier!(ts)
+    if _consume_if!(ts, ".")
+        second = _expect_identifier!(ts)
+        return ColumnRef(first, Symbol(second))
+    end
+    return ColumnRef(nothing, Symbol(first))
+end
+
+function _parse_column_ref_list!(ts::TokenStream)
+    refs = ColumnRef[]
+    push!(refs, _parse_column_ref!(ts))
+    while _consume_if!(ts, ",")
+        push!(refs, _parse_column_ref!(ts))
+    end
+    return refs
+end
+
 function _parse_value_list!(ts::TokenStream)
     values = Any[]
     token = _consume!(ts)
@@ -164,10 +193,18 @@ function _parse_comparison!(ts::TokenStream)::ExprNode
         return expr
     end
 
-    column = Symbol(_expect_identifier!(ts))
+    column = _parse_column_ref!(ts)
     op = _consume!(ts)
     op in ("=", "!=", ">", "<", ">=", "<=") || error("Unsupported operator: $(op)")
-    value = _parse_literal(_consume!(ts))
+
+    next_token = _peek(ts)
+    next_token === nothing && error("Expected comparison value")
+    value = if startswith(next_token, "'") || occursin(r"^-?\d+$", next_token) || occursin(r"^-?\d+\.\d+$", next_token) || uppercase(next_token) in ("NULL", "TRUE", "FALSE")
+        _parse_literal(_consume!(ts))
+    else
+        _parse_column_ref!(ts)
+    end
+
     return CompareExpr(column, op, value)
 end
 
@@ -234,11 +271,25 @@ function _parse_select!(ts::TokenStream)
     if _consume_if!(ts, "*")
         columns = nothing
     else
-        columns = _parse_identifier_list!(ts)
+        columns = _parse_column_ref_list!(ts)
     end
 
     _expect!(ts, "FROM")
-    table = _expect_identifier!(ts)
+    from_table = _expect_identifier!(ts)
+
+    joins = JoinSpec[]
+    while true
+        token = _peek(ts)
+        if token === nothing || uppercase(token) != "JOIN"
+            break
+        end
+
+        _consume!(ts)
+        right_table = _expect_identifier!(ts)
+        _expect!(ts, "ON")
+        on_expr = _parse_comparison!(ts)
+        push!(joins, JoinSpec(right_table, on_expr))
+    end
 
     where_expr = nothing
     token = _peek(ts)
@@ -247,7 +298,7 @@ function _parse_select!(ts::TokenStream)
         where_expr = _parse_or_expr!(ts)
     end
 
-    return SelectStatement(table, columns, where_expr)
+    return SelectStatement(from_table, columns, joins, where_expr)
 end
 
 function _parse_load_csv!(ts::TokenStream)
@@ -317,8 +368,9 @@ end
 function _eval_expr(expr::ExprNode, row::Dict{Symbol, Any})
     if expr isa CompareExpr
         cmp = expr::CompareExpr
-        haskey(row, cmp.column) || error("Unknown column in WHERE: $(cmp.column)")
-        return _eval_compare(row[cmp.column], cmp.op, cmp.value)
+        left_value = _resolve_column_ref(row, cmp.column)
+        right_value = cmp.value isa ColumnRef ? _resolve_column_ref(row, cmp.value) : cmp.value
+        return _eval_compare(left_value, cmp.op, right_value)
     elseif expr isa AndExpr
         e = expr::AndExpr
         return _eval_expr(e.left, row) && _eval_expr(e.right, row)
@@ -332,6 +384,47 @@ end
 function _require_table(db::Database, table_name::String)
     haskey(db.tables, table_name) || error("Table does not exist: $(table_name)")
     return db.tables[table_name]
+end
+
+function _qualified_symbol(table_name::String, column::Symbol)
+    return Symbol("$(table_name).$(column)")
+end
+
+function _resolve_column_ref(row::Dict{Symbol, Any}, ref::ColumnRef)
+    if ref.table !== nothing
+        qualified = _qualified_symbol(ref.table, ref.column)
+        if haskey(row, qualified)
+            return row[qualified]
+        elseif haskey(row, ref.column)
+            return row[ref.column]
+        end
+        error("Unknown column: $(ref.table).$(ref.column)")
+    end
+
+    if haskey(row, ref.column)
+        return row[ref.column]
+    end
+
+    suffix = ".$(ref.column)"
+    candidates = [k for k in keys(row) if endswith(String(k), suffix)]
+    if length(candidates) == 1
+        return row[first(candidates)]
+    elseif isempty(candidates)
+        error("Unknown column: $(ref.column)")
+    end
+    error("Ambiguous column: $(ref.column)")
+end
+
+function _column_ref_symbol(ref::ColumnRef)
+    return ref.table === nothing ? ref.column : _qualified_symbol(ref.table, ref.column)
+end
+
+function _qualify_row(table_name::String, row::Dict{Symbol, Any})
+    qualified = Dict{Symbol, Any}()
+    for (column, value) in row
+        qualified[_qualified_symbol(table_name, column)] = value
+    end
+    return qualified
 end
 
 function load_csv!(db::Database, table_name::String, path::String; header::Bool = true)
@@ -394,21 +487,59 @@ end
 
 function compile_sql(statement::SelectStatement)
     return function (db::Database)
-        table = _require_table(db, statement.table)
-        selected_columns = statement.columns === nothing ? table.columns : statement.columns
+        base_table = _require_table(db, statement.from_table)
 
-        for c in selected_columns
-            c in table.columns || error("Unknown column for select: $(c)")
+        if isempty(statement.joins)
+            selected_columns = statement.columns === nothing ? [ColumnRef(nothing, c) for c in base_table.columns] : statement.columns
+
+            rows = Vector{Vector{Any}}()
+            for row in base_table.rows
+                if statement.where_expr === nothing || _eval_expr(statement.where_expr, row)
+                    push!(rows, [_resolve_column_ref(row, c) for c in selected_columns])
+                end
+            end
+
+            return QueryResult([_column_ref_symbol(c) for c in selected_columns], rows)
+        end
+
+        joined_rows = [_qualify_row(statement.from_table, row) for row in base_table.rows]
+
+        for join_spec in statement.joins
+            right_table = _require_table(db, join_spec.right_table)
+            next_rows = Dict{Symbol, Any}[]
+
+            for left_row in joined_rows
+                for right_raw_row in right_table.rows
+                    candidate = copy(left_row)
+                    merge!(candidate, _qualify_row(join_spec.right_table, right_raw_row))
+                    if _eval_expr(join_spec.on_expr, candidate)
+                        push!(next_rows, candidate)
+                    end
+                end
+            end
+
+            joined_rows = next_rows
+        end
+
+        selected_columns = if statement.columns === nothing
+            cols = ColumnRef[ColumnRef(statement.from_table, c) for c in base_table.columns]
+            for join_spec in statement.joins
+                t = _require_table(db, join_spec.right_table)
+                append!(cols, [ColumnRef(join_spec.right_table, c) for c in t.columns])
+            end
+            cols
+        else
+            statement.columns
         end
 
         rows = Vector{Vector{Any}}()
-        for row in table.rows
+        for row in joined_rows
             if statement.where_expr === nothing || _eval_expr(statement.where_expr, row)
-                push!(rows, [row[c] for c in selected_columns])
+                push!(rows, [_resolve_column_ref(row, c) for c in selected_columns])
             end
         end
 
-        return QueryResult(selected_columns, rows)
+        return QueryResult([_column_ref_symbol(c) for c in selected_columns], rows)
     end
 end
 

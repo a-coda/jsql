@@ -10,6 +10,7 @@ In memory SQL database in Julia
 	- `INSERT INTO table_name (col1, col2, ...) VALUES (...)`
 	- `SELECT * FROM table_name`
 	- `SELECT col1, col2 FROM table_name WHERE ...`
+	- `SELECT t1.col, t2.col FROM t1 JOIN t2 ON t1.key = t2.key [WHERE ...]`
 	- `LOAD CSV 'path/to/file.csv' INTO table_name [HEADER|NOHEADER]`
 - CSV loading via SQL and direct API.
 

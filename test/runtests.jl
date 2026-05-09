@@ -52,4 +52,32 @@ end
     end
 end
 
+@testset "Basic INNER JOIN" begin
+    db = Database()
+
+    execute!(db, "CREATE TABLE users (id, name)")
+    execute!(db, "CREATE TABLE orders (id, user_id, total)")
+
+    execute!(db, "INSERT INTO users VALUES (1, 'Ada')")
+    execute!(db, "INSERT INTO users VALUES (2, 'Grace')")
+
+    execute!(db, "INSERT INTO orders VALUES (10, 1, 120)")
+    execute!(db, "INSERT INTO orders VALUES (11, 2, 40)")
+    execute!(db, "INSERT INTO orders VALUES (12, 1, 60)")
+
+    result = execute!(db, "SELECT users.name, orders.total FROM users JOIN orders ON users.id = orders.user_id WHERE orders.total >= 60")
+    @test result.columns == [Symbol("users.name"), Symbol("orders.total")]
+    @test result.rows == [["Ada", 120], ["Ada", 60]]
+
+    star = execute!(db, "SELECT * FROM users JOIN orders ON users.id = orders.user_id")
+    @test star.columns == [
+        Symbol("users.id"),
+        Symbol("users.name"),
+        Symbol("orders.id"),
+        Symbol("orders.user_id"),
+        Symbol("orders.total"),
+    ]
+    @test length(star.rows) == 3
+end
+
 include("cli.jl")
