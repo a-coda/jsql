@@ -45,3 +45,28 @@ Run:
 ```powershell
 julia --project=. -e "using Pkg; Pkg.test()"
 ```
+
+## CLI
+Run the lightweight CLI with:
+
+```powershell
+julia --project=. bin/jsql.jl
+```
+
+Execute a single statement:
+
+```powershell
+julia --project=. bin/jsql.jl --execute "CREATE TABLE users (id, name); INSERT INTO users VALUES (1, 'Ada'); SELECT * FROM users"
+```
+
+Run statements from a file:
+
+```powershell
+julia --project=. bin/jsql.jl --file queries.sql
+```
+
+Pipe statements from stdin:
+
+```powershell
+Get-Content queries.sql | julia --project=. bin/jsql.jl
+```

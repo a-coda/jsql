@@ -51,3 +51,5 @@ end
         @test from_sql.rows == [[1, "Lin"]]
     end
 end
+
+include("cli.jl")
